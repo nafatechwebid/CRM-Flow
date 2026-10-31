@@ -1,8 +1,7 @@
-// BillFlow API: Cloudflare Pages Functions + D1 (database) + R2 (foto)
-// Binding yang dibutuhkan: DB (D1), FILES (R2), variabel rahasia SESSION_SECRET.
+// BillFlow API: Cloudflare Pages Functions + D1 (database, termasuk foto)
+// Binding yang dibutuhkan: DB (D1) dan variabel rahasia SESSION_SECRET.
 
 const COLLECTIONS = ['settings', 'customers', 'products', 'invoices', 'transactions'];
-const MAX_IMG = 1_500_000;      // byte, setelah decode
 const SESSION_DAYS = 7;
 const enc = new TextEncoder();
 
@@ -67,20 +66,10 @@ async function createUser(env, email, password) {
 }
 const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
-async function r2Usage(env) {
-  let bytes = 0, count = 0, cursor;
-  do {
-    const page = await env.FILES.list({ prefix: 'img/', cursor });
-    for (const o of page.objects) { bytes += o.size; count++; }
-    cursor = page.truncated ? page.cursor : undefined;
-  } while (cursor);
-  return { bytes, count };
-}
-
 /* ---------- router ---------- */
 export async function onRequest({ request, env, params }) {
   try {
-    if (!env.DB || !env.FILES) return bad('Binding DB / FILES belum dipasang di Cloudflare Pages.', 500);
+    if (!env.DB) return bad('Binding DB (D1) belum dipasang di Cloudflare Pages.', 500);
     if (!env.SESSION_SECRET || env.SESSION_SECRET.length < 16) return bad('SESSION_SECRET belum diisi (minimal 16 karakter).', 500);
     const path = '/' + [].concat(params.path || []).join('/');
     const method = request.method;
@@ -159,42 +148,9 @@ export async function onRequest({ request, env, params }) {
       return json({ ok: true, n: stmts.length });
     }
 
-    if (path === '/upload' && method === 'POST') {
-      const { data } = await readJson(request);
-      const m = /^data:image\/(jpeg|png|webp);base64,([A-Za-z0-9+/=]+)$/.exec(data || '');
-      if (!m) return bad('Format gambar tidak didukung.');
-      const bin = Uint8Array.from(atob(m[2]), (c) => c.charCodeAt(0));
-      if (bin.length > MAX_IMG) return bad('Gambar terlalu besar (maks 1,5 MB).');
-      const key = 'img/' + hex(crypto.getRandomValues(new Uint8Array(12))) + '.' + (m[1] === 'jpeg' ? 'jpg' : m[1]);
-      await env.FILES.put(key, bin, { httpMetadata: { contentType: 'image/' + m[1] } });
-      return json({ url: '/api/file/' + key });
-    }
-
-    if (path.startsWith('/file/img/') && method === 'GET') {
-      const obj = await env.FILES.get(path.slice(6));
-      if (!obj) return new Response('Not found', { status: 404 });
-      return new Response(obj.body, { headers: { 'content-type': obj.httpMetadata?.contentType || 'image/jpeg', 'cache-control': 'private, max-age=86400', 'x-content-type-options': 'nosniff' } });
-    }
-
     if (path === '/usage' && method === 'GET') {
       const d1 = (await env.DB.prepare('SELECT COALESCE(SUM(LENGTH(data)), 0) AS b FROM docs').first()).b;
-      const r2 = await r2Usage(env);
-      return json({ d1Bytes: d1, r2Bytes: r2.bytes, r2Count: r2.count });
-    }
-
-    // hapus foto yang tidak lagi dipakai data mana pun (dipanggil setelah "hapus foto" / ganti foto)
-    if (path === '/storage/gc' && method === 'POST') {
-      const rows = (await env.DB.prepare('SELECT data FROM docs').all()).results;
-      const used = new Set();
-      for (const r of rows) for (const m of r.data.matchAll(/\/api\/file\/(img\/[A-Za-z0-9._-]+)/g)) used.add(m[1]);
-      let freed = 0, removed = 0, cursor;
-      do {
-        const page = await env.FILES.list({ prefix: 'img/', cursor });
-        const dead = page.objects.filter((o) => !used.has(o.key));
-        if (dead.length) { await env.FILES.delete(dead.map((o) => o.key)); freed += dead.reduce((a, o) => a + o.size, 0); removed += dead.length; }
-        cursor = page.truncated ? page.cursor : undefined;
-      } while (cursor);
-      return json({ removed, freed });
+      return json({ d1Bytes: d1 });
     }
 
     return bad('Endpoint tidak ditemukan.', 404);
