@@ -251,13 +251,13 @@ const LS={get:k=>{try{return lsOk?localStorage.getItem(k):mem[k]||null}catch(e){
   set:(k,v)=>{if(lsOk)localStorage.setItem(k,v);else mem[k]=v},del:k=>{try{lsOk?localStorage.removeItem(k):delete mem[k]}catch(e){}}};
 let tt;function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('on');clearTimeout(tt);tt=setTimeout(()=>t.classList.remove('on'),2600)}
 
-/* ---------- data store: tersambung ke API Cloudflare (D1 + R2) ---------- */
+/* ---------- data store: tersambung ke API Cloudflare (D1) ---------- */
 const COLS=['customers','products','invoices','transactions'];
 let S={}, DB={customers:[],products:[],invoices:[],transactions:[]};
 const DEF={brand:'BillFlow',tagline:'Penagihan & CRM',logo:null,accent:'#B08D4F',currency:'IDR',taxRate:11,prefix:'INV',nextNo:1,
   biz:{name:'',address:'',email:'',phone:'',bank:''},limitMB:1024,theme:'auto',demo:false,auth:{email:''}};
 S=JSON.parse(JSON.stringify(DEF));
-let SRV={d1:0,r2:0};              // pemakaian nyata dari server
+let SRV={d1:0};              // pemakaian nyata dari server
 const snap={};                    // salinan terakhir yang sudah tersimpan di server
 const pending=new Set();let flushT=null,gcNeeded=false,flushing=Promise.resolve();
 async function api(path,body,method){
@@ -273,25 +273,21 @@ async function flush(){
   const keys=[...pending];pending.clear();
   try{
     for(const k of keys){
-      // unggah foto baru (data URL) ke R2, ganti dengan alamat file
-      const items=k==='settings'?[S]:DB[k];
-      for(const it of items){const f=k==='settings'?'logo':'photo';if(it[f]&&String(it[f]).startsWith('data:')){it[f]=(await api('upload',{data:it[f]})).url;gcNeeded=true}}
       const cur=new Map(docOf(k).map(d=>[k==='settings'?'main':d.id,JSON.stringify(d)]));
       const old=snap[k]||new Map();
       const upsert=[],remove=[];
-      cur.forEach((v,id)=>{if(old.get(id)!==v){upsert.push(JSON.parse(v));if(old.has(id)&&old.get(id).includes('/api/file/')&&!v.includes(old.get(id).match(/\/api\/file\/img\/[\w.-]+/)[0]))gcNeeded=true}});
-      old.forEach((v,id)=>{if(!cur.has(id)){remove.push(id);if(v.includes('/api/file/'))gcNeeded=true}});
+      cur.forEach((v,id)=>{if(old.get(id)!==v)upsert.push(JSON.parse(v))});
+      old.forEach((v,id)=>{if(!cur.has(id))remove.push(id)});
       if(upsert.length||remove.length)await api('sync',{collection:k,upsert,remove});
       snap[k]=cur;
     }
-    if(gcNeeded){gcNeeded=false;await api('storage/gc',{})}
     await refreshUsage();
   }catch(e){
     if(e.status===401){showLogin();return}
     toast('Gagal menyimpan ke server: '+e.message);keys.forEach(k=>pending.add(k));
   }
 }
-async function refreshUsage(){try{const u=await api('usage');SRV={d1:u.d1Bytes,r2:u.r2Bytes};warn();if(route==='penyimpanan')render()}catch(e){}}
+async function refreshUsage(){try{const u=await api('usage');SRV={d1:u.d1Bytes};warn();if(route==='penyimpanan')render()}catch(e){}}
 async function loadAll(){
   const d=await api('data');
   S=Object.assign({},DEF,d.settings||{});S.biz=Object.assign({},DEF.biz,S.biz);S.auth={email:(S.auth&&S.auth.email)||''};
@@ -335,9 +331,9 @@ function applyBrand(){
 /* ---------- storage accounting ---------- */
 function usage(){
   const sz=o=>JSON.stringify(o).length;
+  const ph=DB.customers.concat(DB.products).reduce((a,x)=>a+(x.photo?x.photo.length:0),0)+(S.logo?S.logo.length:0);
   const text=['settings',...COLS].reduce((a,k)=>a+sz(k==='settings'?S:DB[k]),0);
-  const total=Math.max(text,SRV.d1)+SRV.r2;
-  return{total,photos:SRV.r2,cust:sz(DB.customers),prod:sz(DB.products),inv:sz(DB.invoices),tx:sz(DB.transactions),limit:S.limitMB*1024*1024};
+  return{total:Math.max(text,SRV.d1),photos:ph,cust:sz(DB.customers),prod:sz(DB.products),inv:sz(DB.invoices),tx:sz(DB.transactions),limit:S.limitMB*1024*1024};
 }
 const kb=b=>b>=1048576?(b/1048576).toFixed(2)+' MB':(b<=0?0:Math.max(1,Math.round(b/1024)))+' KB';
 function warn(){
@@ -353,10 +349,10 @@ function confirmBox(title,msg,okLabel,fn,typed){
   if(typed)$('#cf-t').addEventListener('input',e=>{$('#cf-ok').disabled=e.target.value.trim()!==typed});
   $('#cf-ok').onclick=()=>{closeModal();fn()};
 }
-function readImage(file,max){return new Promise((res,rej)=>{const fr=new FileReader();fr.onerror=rej;fr.onload=()=>{const im=new Image();im.onerror=rej;im.onload=()=>{const k=Math.min(1,max/Math.max(im.width,im.height)),c=document.createElement('canvas');c.width=Math.round(im.width*k);c.height=Math.round(im.height*k);c.getContext('2d').drawImage(im,0,0,c.width,c.height);res(c.toDataURL('image/jpeg',.8))};im.src=fr.result};fr.readAsDataURL(file)})}
+function readImage(file,max){return new Promise((res,rej)=>{const fr=new FileReader();fr.onerror=rej;fr.onload=()=>{const im=new Image();im.onerror=rej;im.onload=()=>{const k=Math.min(1,max/Math.max(im.width,im.height)),c=document.createElement('canvas');c.width=Math.round(im.width*k);c.height=Math.round(im.height*k);c.getContext('2d').drawImage(im,0,0,c.width,c.height);res(c.toDataURL('image/jpeg',.72))};im.src=fr.result};fr.readAsDataURL(file)})}
 let pendingPhoto=null;
 function upBlock(cur,label,initial){pendingPhoto=cur||null;return `<div class="fl full"><span>${label}</span><div class="up"><div class="av2" id="up-pv">${cur?`<img alt="" src="${cur}">`:esc(initial)}</div><label class="btn sm">${ic('up')}<span>Pilih foto</span><input type="file" id="up-f" accept="image/*" hidden></label><button type="button" class="btn sm" data-act="up-clear">Hapus foto</button></div></div>`}
-document.addEventListener('change',async e=>{if(e.target.id==='up-f'&&e.target.files[0]){try{pendingPhoto=await readImage(e.target.files[0],480);$('#up-pv').innerHTML=`<img alt="" src="${pendingPhoto}">`}catch(x){toast('Gambar tidak dapat dibaca.')}}});
+document.addEventListener('change',async e=>{if(e.target.id==='up-f'&&e.target.files[0]){try{pendingPhoto=await readImage(e.target.files[0],400);$('#up-pv').innerHTML=`<img alt="" src="${pendingPhoto}">`}catch(x){toast('Gambar tidak dapat dibaca.')}}});
 
 /* ---------- router / pages ---------- */
 const NAV=[['dashboard','Dashboard','grid'],['pelanggan','Pelanggan','users'],['produk','Produk & Layanan','box'],['tagihan','Tagihan','file'],['transaksi','Transaksi','card'],['penyimpanan','Penyimpanan','db'],['pengaturan','Pengaturan','set']];
@@ -522,14 +518,14 @@ function cleanSets(){
   const oldTx=DB.transactions.filter(t=>t.date<cut);
   const idle=DB.customers.filter(c=>c.status!=='active'&&!DB.invoices.some(i=>i.customerId===c.id));
   return[
-   {k:'photos',t:'Foto & logo',d:'Hapus semua foto pelanggan, produk, dan logo dari penyimpanan Cloudflare R2. Teks tetap aman.',n:photoItems.length+(S.logo?1:0),b:usage().photos},
+   {k:'photos',t:'Foto & logo',d:'Hapus semua foto pelanggan, produk, dan logo dari database. Teks tetap aman.',n:photoItems.length+(S.logo?1:0),b:usage().photos},
    {k:'void',t:'Tagihan dibatalkan & draf lama',d:'Tagihan berstatus dibatalkan, serta draf yang lebih tua dari periode di atas.',n:voids.length,b:sz(voids)},
    {k:'paid',t:'Tagihan lunas lama',d:'Tagihan lunas yang terbit sebelum periode di atas. Riwayat pembayaran tetap ada.',n:oldPaid.length,b:sz(oldPaid)},
    {k:'tx',t:'Transaksi lama',d:'Catatan pembayaran sebelum periode di atas. Total pendapatan lama tidak lagi tampil di grafik.',n:oldTx.length,b:sz(oldTx)},
    {k:'idle',t:'Pelanggan nonaktif tanpa tagihan',d:'Pelanggan yang tidak aktif dan belum pernah ditagih.',n:idle.length,b:sz(idle)}].map(x=>(x.fn=()=>doClean(x.k,cut),x));
 }
 function doClean(k,cut){
-  if(k==='photos'){DB.customers.concat(DB.products).forEach(x=>x.photo=null);S.logo=null;gcNeeded=true;save('customers');save('products');save('settings');applyBrand()}
+  if(k==='photos'){DB.customers.concat(DB.products).forEach(x=>x.photo=null);S.logo=null;save('customers');save('products');save('settings');applyBrand()}
   if(k==='void'){DB.invoices=DB.invoices.filter(i=>!(i.status==='void'||(i.status==='draft'&&i.issue<cut)));save('invoices')}
   if(k==='paid'){DB.invoices=DB.invoices.filter(i=>!(i.status==='paid'&&i.issue<cut));save('invoices')}
   if(k==='tx'){DB.transactions=DB.transactions.filter(t=>t.date>=cut);save('transactions')}
@@ -537,7 +533,7 @@ function doClean(k,cut){
 }
 function pStore(){
   const u=usage(),p=u.total/u.limit,sets=cleanSets();
-  const rows=[['Foto & logo (R2)',u.photos],['Pelanggan',u.cust],['Produk',u.prod],['Tagihan',u.inv],['Transaksi',u.tx]];
+  const rows=[['Foto & logo',u.photos],['Pelanggan (teks)',u.cust-DB.customers.reduce((a,x)=>a+(x.photo?x.photo.length:0),0)],['Produk (teks)',u.prod-DB.products.reduce((a,x)=>a+(x.photo?x.photo.length:0),0)],['Tagihan',u.inv],['Transaksi',u.tx]];
   return head('Penyimpanan','Pantau pemakaian dan bebaskan ruang dengan sekali klik.')+
   `<div class="card pad" style="margin-bottom:20px"><div style="display:flex;justify-content:space-between;align-items:flex-end;gap:16px;flex-wrap:wrap;margin-bottom:14px"><div><div class="kpi" style="padding:0"><span>Terpakai</span><b class="num">${kb(u.total)} <span style="font:500 18px var(--sans);color:var(--muted)">dari ${S.limitMB} MB</span></b></div></div><button class="btn pri" data-act="quick">${ic('check')}<span>Bersihkan cepat</span></button></div>
   <div class="meter ${p>=.8?'hot':''}"><i style="width:${Math.min(100,p*100)}%"></i></div><p style="color:var(--muted);margin-top:10px">${Math.round(p*100)}% terpakai. Bersihkan cepat menghapus foto, tagihan dibatalkan, dan draf lama. Peringatan muncul otomatis di atas layar saat mencapai 80% dari batas yang Anda tetapkan di Pengaturan.</p>
@@ -609,7 +605,7 @@ const A={
   'bk-copy':()=>copy(JSON.stringify({v:1,settings:Object.assign({},S,{auth:undefined}),data:DB})),
   'bk-open':()=>{modal('Pulihkan dari cadangan',`<p style="color:var(--muted);margin-bottom:12px">Tempel teks cadangan. Seluruh data saat ini akan diganti.</p><textarea class="txt" id="bk-t" rows="8"></textarea><div class="df"><button class="btn" data-act="close">Batal</button><button class="btn pri" data-act="bk-go">Pulihkan</button></div>`)},
   'bk-go':()=>{try{const o=JSON.parse($('#bk-t').value);if(!o.data||!o.settings)throw 0;S=Object.assign({},DEF,o.settings,{auth:S.auth});COLS.forEach(k=>DB[k]=o.data[k]||[]);saveAll();closeModal();applyTheme();applyBrand();renderNav();render();toast('Data dipulihkan.')}catch(e){toast('Teks cadangan tidak valid.')}},
-  wipe:()=>confirmBox('Hapus semua data?','Semua pelanggan, produk, tagihan, dan transaksi dihapus. Pengaturan merek tetap. Tindakan ini tidak dapat dibatalkan.','Hapus semua',()=>{COLS.forEach(k=>DB[k]=[]);S.demo=false;S.nextNo=1;gcNeeded=true;saveAll();toast('Data dikosongkan.');renderNav();render()},'HAPUS'),
+  wipe:()=>confirmBox('Hapus semua data?','Semua pelanggan, produk, tagihan, dan transaksi dihapus. Pengaturan merek tetap. Tindakan ini tidak dapat dibatalkan.','Hapus semua',()=>{COLS.forEach(k=>DB[k]=[]);S.demo=false;S.nextNo=1;saveAll();toast('Data dikosongkan.');renderNav();render()},'HAPUS'),
   'up-clear':()=>{pendingPhoto=null;$('#up-pv').innerHTML='?'},acc:d=>{$('#s-acc').value=d.c;$$('#s-sw button').forEach(b=>b.classList.toggle('on',b.dataset.c===d.c))},
   'set-save':setSave
 };
@@ -638,7 +634,7 @@ applyTheme();applyBrand();
 (async()=>{
   try{const me=await api('me');
     if(me.user){S.auth={email:me.user};await enter()}else showLogin(me.setup)}
-  catch(e){$('#login').classList.add('on');$('#login').innerHTML='<div class="lbox"><h1>Tidak dapat terhubung</h1><p style="color:var(--muted)">'+esc(e.message)+'</p><p style="color:var(--muted);font-size:12px">Pastikan binding D1 (DB), R2 (FILES) dan SESSION_SECRET sudah dipasang. Lihat README.</p></div>'}
+  catch(e){$('#login').classList.add('on');$('#login').innerHTML='<div class="lbox"><h1>Tidak dapat terhubung</h1><p style="color:var(--muted)">'+esc(e.message)+'</p><p style="color:var(--muted);font-size:12px">Pastikan binding D1 (DB) dan SESSION_SECRET sudah dipasang di Cloudflare Pages, lalu jalankan ulang deployment.</p></div>'}
 })();
 })();
 </script>
